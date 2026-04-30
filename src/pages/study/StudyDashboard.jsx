@@ -181,35 +181,50 @@ export default function StudyDashboard() {
                     {domain.los.map((lo) => {
                       const cState = contentBySession[lo.id] ?? 'not_started'
                       const qState = loQuiz[lo.id] ?? 'not_started'
-                      const target =
-                        cState === 'complete'
-                          ? `/study/${exam.id}/lo/${lo.id}/quiz`
-                          : `/study/${exam.id}/lo/${lo.id}/content`
+
                       return (
-                        <li key={lo.id}>
-                          <Link
-                            to={target}
-                            className="flex items-center justify-between px-5 py-3 hover:bg-gray-50"
-                          >
-                            <div>
-                              <span className="text-xs font-mono text-gray-500">
-                                {lo.code}
-                              </span>
-                              <p className="text-gray-900 font-medium">
-                                {lo.title}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-gray-500 hidden sm:inline">
-                                Content
-                              </span>
+                        <li key={lo.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between px-5 py-4 hover:bg-gray-50 gap-4">
+                          <div className="flex-1">
+                            <span className="text-xs font-mono text-gray-500">
+                              {lo.code}
+                            </span>
+                            <p className="text-gray-900 font-medium">
+                              {lo.title}
+                            </p>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-gray-400">Status:</span>
                               {statusBadge(cState)}
-                              <span className="text-xs text-gray-500 hidden sm:inline">
-                                Quiz
-                              </span>
                               {statusBadge(qState)}
                             </div>
-                          </Link>
+                          </div>
+
+                          <div className="flex items-center gap-3 w-full sm:w-auto">
+                            {/* MANUAL LINK 1: Always available for View/Review */}
+                            <Link
+                              to={`/study/${exam.id}/lo/${lo.id}/content`}
+                              className={`flex-1 sm:flex-none text-center text-xs font-medium px-3 py-2 rounded border transition-colors ${
+                                cState === 'complete' 
+                                  ? 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100' 
+                                  : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                              }`}
+                            >
+                              {cState === 'complete' ? 'Review Notes' : 'Read Content'}
+                            </Link>
+
+                            {/* MANUAL LINK 2: Quiz (Gated by content completion) */}
+                            <Link
+                              to={`/study/${exam.id}/lo/${lo.id}/quiz`}
+                              className={`flex-1 sm:flex-none text-center text-xs font-medium px-3 py-2 rounded border transition-colors ${
+                                cState === 'complete'
+                                  ? qState === 'complete'
+                                    ? 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100'
+                                    : 'bg-white border-blue-600 text-blue-600 hover:bg-blue-50'
+                                  : 'bg-gray-50 border-gray-200 text-gray-400 pointer-events-none'
+                              }`}
+                            >
+                              {qState === 'complete' ? 'View Results' : 'Take Quiz'}
+                            </Link>
+                          </div>
                         </li>
                       )
                     })}
