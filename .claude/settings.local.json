@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "mcp__Claude_Preview__preview_start",
+      "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__list_projects",
+      "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__execute_sql",
+      "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__apply_migration",
+      "Bash(node --env-file=.env seed_questions.js TS1.1)"
+    ]
+  }
+}
