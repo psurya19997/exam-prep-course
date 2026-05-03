@@ -9,9 +9,10 @@ export default function QuestionRenderer({
   value,
   onChange,
   disabled,
+  feedback,
 }) {
   const sorted = [...options].sort((a, b) => a.sort_order - b.sort_order)
-  const props = { options: sorted, value, onChange, disabled }
+  const props = { options: sorted, value, onChange, disabled, feedback }
 
   switch (questionTypeCode) {
     case 'mc':

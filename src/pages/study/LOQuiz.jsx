@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabase.js'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { useToast } from '../../hooks/useToast.jsx'
@@ -26,6 +26,8 @@ const STAGE = {
 
 export default function LOQuiz() {
   const { examId, loId } = useParams()
+  const [searchParams] = useSearchParams()
+  const mode = searchParams.get('mode')
   const { user } = useAuth()
   const { toast } = useToast()
   const navigate = useNavigate()
@@ -82,6 +84,11 @@ export default function LOQuiz() {
       }
       setLo(loData)
 
+      if (mode === 'results') {
+        await loadCompletedSession()
+        return
+      }
+
       const { data: active } = await supabase
         .from('lo_quiz_sessions')
         .select('id, session_id, sessions!inner(user_id, exam_id)')
@@ -106,6 +113,70 @@ export default function LOQuiz() {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, examId, loId])
+
+  async function loadCompletedSession() {
+    const { data: completed, error: cErr } = await supabase
+      .from('lo_quiz_sessions')
+      .select('id, session_id, sessions!inner(user_id, exam_id)')
+      .eq('lo_id', loId)
+      .eq('status', 'completed')
+      .eq('sessions.user_id', user.id)
+      .eq('sessions.exam_id', examId)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (cErr) {
+      setError(cErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+    if (!completed) {
+      await createFreshSession()
+      return
+    }
+
+    setSessionId(completed.session_id)
+    setLoQuizSessionId(completed.id)
+
+    const { data: qs, error: qErr } = await supabase
+      .from('questions')
+      .select(
+        'id, lo_id, question_type_id, question_text, explanation, difficulty, question_options(*)'
+      )
+      .eq('lo_id', loId)
+      .order('created_at')
+    if (qErr) {
+      setError(qErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+
+    const { data: qts } = await supabase.from('question_types').select('*')
+    const qtMap = {}
+    for (const t of qts ?? []) qtMap[t.id] = t
+    setQuestionTypesById(qtMap)
+
+    const { data: existingAttempts } = await supabase
+      .from('attempts')
+      .select('question_id, is_correct, user_answer')
+      .eq('session_id', completed.session_id)
+
+    const ans = {}
+    const fb = {}
+    const sub = {}
+    for (const a of existingAttempts ?? []) {
+      ans[a.question_id] = a.user_answer
+      fb[a.question_id] = { is_correct: a.is_correct }
+      sub[a.question_id] = true
+    }
+    setAnswersByQ(ans)
+    setFeedbackByQ(fb)
+    setSubmittedByQ(sub)
+
+    setQuestions(qs ?? [])
+    setStage(STAGE.COMPLETED)
+  }
 
   async function createFreshSession() {
     try {
@@ -442,6 +513,7 @@ export default function LOQuiz() {
             value={userAnswer}
             onChange={setAnswerForCurrent}
             disabled={submitted}
+            feedback={submitted ? feedback ?? null : null}
           />
         </div>
 
@@ -587,16 +659,27 @@ function QuizResults({
   feedbackByQ,
 }) {
   const [subAccuracy, setSubAccuracy] = useState([])
+  const [subtopicById, setSubtopicById] = useState({})
 
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
     async function load() {
-      const { data } = await supabase
-        .from('subtopic_accuracy')
-        .select('subtopic_id, attempts, correct, accuracy_pct')
-        .eq('lo_id', lo.id)
-      if (!cancelled) setSubAccuracy(data ?? [])
+      const [{ data: accRows }, { data: subRows }] = await Promise.all([
+        supabase
+          .from('subtopic_accuracy')
+          .select('subtopic_id, attempts, correct, accuracy_pct')
+          .eq('lo_id', lo.id),
+        supabase
+          .from('subtopics')
+          .select('id, code, title')
+          .eq('lo_id', lo.id),
+      ])
+      if (cancelled) return
+      const map = {}
+      for (const s of subRows ?? []) map[s.id] = s
+      setSubtopicById(map)
+      setSubAccuracy(accRows ?? [])
     }
     load()
     return () => {
@@ -629,30 +712,40 @@ function QuizResults({
             Per-subtopic accuracy
           </h2>
           <ul className="space-y-2">
-            {subAccuracy.map((row) => (
-              <li
-                key={row.subtopic_id}
-                className="flex items-center justify-between bg-white border border-gray-200 rounded-md px-4 py-2"
-              >
-                <span className="text-sm text-gray-500 font-mono">
-                  {row.subtopic_id.slice(0, 8)}…
-                </span>
-                <span className="text-sm">
-                  {row.correct}/{row.attempts} ·{' '}
-                  <span
-                    className={`font-semibold ${
-                      row.accuracy_pct >= 80
-                        ? 'text-green-700'
-                        : row.accuracy_pct >= 60
-                        ? 'text-yellow-700'
-                        : 'text-red-700'
-                    }`}
-                  >
-                    {row.accuracy_pct}%
+            {subAccuracy.map((row) => {
+              const sub = subtopicById[row.subtopic_id]
+              return (
+                <li
+                  key={row.subtopic_id}
+                  className="flex items-center justify-between bg-white border border-gray-200 rounded-md px-4 py-2 gap-3"
+                >
+                  <div className="min-w-0">
+                    {sub?.code && (
+                      <span className="text-xs font-mono text-gray-500 mr-2">
+                        {sub.code}
+                      </span>
+                    )}
+                    <span className="text-sm text-gray-900">
+                      {sub?.title ?? sub?.code ?? row.subtopic_id}
+                    </span>
+                  </div>
+                  <span className="text-sm whitespace-nowrap">
+                    {row.correct}/{row.attempts} ·{' '}
+                    <span
+                      className={`font-semibold ${
+                        row.accuracy_pct >= 80
+                          ? 'text-green-700'
+                          : row.accuracy_pct >= 60
+                          ? 'text-yellow-700'
+                          : 'text-red-700'
+                      }`}
+                    >
+                      {row.accuracy_pct}%
+                    </span>
                   </span>
-                </span>
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

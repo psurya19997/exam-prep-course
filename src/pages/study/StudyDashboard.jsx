@@ -213,7 +213,11 @@ export default function StudyDashboard() {
 
                             {/* MANUAL LINK 2: Quiz (Gated by content completion) */}
                             <Link
-                              to={`/study/${exam.id}/lo/${lo.id}/quiz`}
+                              to={
+                                qState === 'complete'
+                                  ? `/study/${exam.id}/lo/${lo.id}/quiz?mode=results`
+                                  : `/study/${exam.id}/lo/${lo.id}/quiz`
+                              }
                               className={`flex-1 sm:flex-none text-center text-xs font-medium px-3 py-2 rounded border transition-colors ${
                                 cState === 'complete'
                                   ? qState === 'complete'
