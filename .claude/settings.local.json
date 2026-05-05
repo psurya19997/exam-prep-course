@@ -8,7 +8,8 @@
       "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__list_projects",
       "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__execute_sql",
       "mcp__4eb0b489-aa1b-4b41-990b-c0a30c98d583__apply_migration",
-      "Bash(node --env-file=.env seed_questions.js TS1.1)"
+      "Bash(node --env-file=.env seed_questions.js TS1.1)",
+      "Bash(node --check /d/exam-prep-course/seed_questions.js)"
     ]
   }
 }

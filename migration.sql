@@ -1,8 +1,19 @@
 -- ============================================================
 -- EXAM PREP APP — SUPABASE SQL MIGRATION
--- Version: 1.1
--- Date: April 2026
+-- Version: 1.2
+-- Date: May 2026
 -- 17 tables + 2 views + RLS policies + indexes + triggers
+--
+-- Changes from v1.1:
+--   * questions.lo_id is now nullable.
+--   * Added questions.domain_id (FK to domains, ON DELETE CASCADE)
+--     so a question can scope to a domain exam instead of an LO.
+--   * Added CHECK constraint questions_scope_chk: exactly one of
+--     (lo_id, domain_id) must be set per row.
+--   * Added partial index idx_questions_domain_id to keep the
+--     domain-exam question lookup fast without bloating it with
+--     LO-quiz rows.
+--   See "v1.2 schema changes" block at the bottom.
 --
 -- Changes from v1.0:
 --   * Added public.auth_is_creator() SECURITY DEFINER helper to
@@ -727,6 +738,32 @@ CREATE POLICY "creators update flag status"
 
 
 -- ============================================================
+-- v1.2 schema changes (applied 2026-05-04)
+-- Domain-exam questions live in the same `questions` table as
+-- LO-quiz questions, scoped via domain_id instead of lo_id.
+-- ============================================================
+
+ALTER TABLE questions
+  ALTER COLUMN lo_id DROP NOT NULL;
+
+ALTER TABLE questions
+  ADD COLUMN domain_id uuid REFERENCES domains(id) ON DELETE CASCADE;
+
+ALTER TABLE questions
+  ADD CONSTRAINT questions_scope_chk
+  CHECK (
+    (lo_id IS NOT NULL AND domain_id IS NULL)
+    OR (lo_id IS NULL AND domain_id IS NOT NULL)
+  );
+
+CREATE INDEX idx_questions_domain_id
+  ON questions(domain_id)
+  WHERE domain_id IS NOT NULL;
+
+COMMENT ON COLUMN questions.domain_id IS 'Set on domain-exam questions; mutually exclusive with lo_id (enforced by questions_scope_chk).';
+
+
+-- ============================================================
 -- DONE
 -- ============================================================
 -- Tables: 17
@@ -734,6 +771,6 @@ CREATE POLICY "creators update flag status"
 -- Functions: 4 (handle_new_user, increment_reported_count,
 --              reset_verified_on_edit, auth_is_creator)
 -- Triggers: 3 (new user profile, reported_count increment, verified reset)
--- Indexes: 22
+-- Indexes: 23 (added idx_questions_domain_id in v1.2)
 -- RLS policies: applied to all 17 tables
 -- ============================================================

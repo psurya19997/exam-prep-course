@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../../lib/supabase.js'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { useToast } from '../../hooks/useToast.jsx'
@@ -18,65 +18,82 @@ import {
 
 const STAGE = {
   LOADING: 'loading',
+  LOCKED: 'locked',
+  RESUME_DIALOG: 'resume_dialog',
+  PRIOR_RESULTS_DIALOG: 'prior_results_dialog',
   ACTIVE: 'active',
   COMPLETED: 'completed',
   ERROR: 'error',
-  LOCKED: 'locked',
 }
 
 export default function DomainExam() {
   const { examId, domainId } = useParams()
+  const [searchParams] = useSearchParams()
+  const mode = searchParams.get('mode')
   const { user } = useAuth()
   const { toast } = useToast()
 
   const [stage, setStage] = useState(STAGE.LOADING)
   const [error, setError] = useState(null)
   const [domain, setDomain] = useState(null)
-  const [los, setLos] = useState([]) // all LOs in domain (for per-LO breakdown)
+  const [los, setLos] = useState([])
 
+  // session
   const [sessionId, setSessionId] = useState(null)
   const [domainExamSessionId, setDomainExamSessionId] = useState(null)
+  const [existingActive, setExistingActive] = useState(null)
   const [startedAt, setStartedAt] = useState(null)
 
+  // questions
   const [questions, setQuestions] = useState([])
   const [questionTypesById, setQuestionTypesById] = useState({})
 
+  // per-question state (mirrors LOQuiz)
   const [currentIdx, setCurrentIdx] = useState(0)
-  const [answersByQ, setAnswersByQ] = useState({}) // qid → user answer
-  const [submitWarn, setSubmitWarn] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [resultsByQ, setResultsByQ] = useState({}) // populated only after submit
+  const [answersByQ, setAnswersByQ] = useState({})
+  const [feedbackByQ, setFeedbackByQ] = useState({})
+  const [submittedByQ, setSubmittedByQ] = useState({})
 
+  const [submitWarn, setSubmitWarn] = useState(false)
+  const [completing, setCompleting] = useState(false)
   const [flagOpen, setFlagOpen] = useState(false)
 
-  // StrictMode runs effects twice in dev. Without a guard, both invocations
-  // race past the "abandon active" check and each insert a fresh session,
-  // leaving a dangling active row. NOTE: we deliberately don't pair the
-  // ref guard with a "cancelled" flag — under StrictMode the cleanup of
-  // the first pass would flip cancelled=true while the ref makes the
-  // second pass bail, leaving the start forever stuck mid-flight.
+  // StrictMode-safe single-flight (same rationale as LOQuiz).
   const startedRef = useRef(false)
 
   useEffect(() => {
     if (!user) return
     if (startedRef.current) return
     startedRef.current = true
-    async function start() {
+    async function load() {
       try {
-        // 1. Verify unlock: every LO in domain must have a completed lo_quiz_session for this user
+        const { data: dom, error: domErr } = await supabase
+          .from('domains')
+          .select('id, code, title')
+          .eq('id', domainId)
+          .single()
+        if (domErr) throw domErr
+        setDomain(dom)
+
         const { data: domLos, error: lErr } = await supabase
           .from('los')
           .select('id, code, title, sort_order')
           .eq('domain_id', domainId)
           .order('sort_order')
         if (lErr) throw lErr
+        setLos(domLos ?? [])
+
+        if (mode === 'results') {
+          await loadCompletedSession()
+          return
+        }
+
+        // Unlock check: every LO in domain must have a completed lo_quiz_session
         if (!domLos?.length) {
           setError('Domain has no learning objectives.')
           setStage(STAGE.ERROR)
           return
         }
-        setLos(domLos)
-
         const loIds = domLos.map((l) => l.id)
         const { data: doneRows, error: dErr } = await supabase
           .from('lo_quiz_sessions')
@@ -93,81 +110,203 @@ export default function DomainExam() {
           return
         }
 
-        // 2. Domain row
-        const { data: dom, error: domErr } = await supabase
-          .from('domains')
-          .select('id, code, title')
-          .eq('id', domainId)
-          .single()
-        if (domErr) throw domErr
-        setDomain(dom)
-
-        // 3. Always abandon any existing active domain_exam_session for this user/domain
-        const { data: actives } = await supabase
+        // Active session?
+        const { data: active } = await supabase
           .from('domain_exam_sessions')
-          .select('id, sessions!inner(user_id, exam_id)')
+          .select('id, session_id, sessions!inner(user_id, exam_id)')
           .eq('domain_id', domainId)
           .eq('status', 'active')
           .eq('sessions.user_id', user.id)
           .eq('sessions.exam_id', examId)
-        if (actives?.length) {
-          await supabase
-            .from('domain_exam_sessions')
-            .update({ status: 'abandoned' })
-            .in('id', actives.map((a) => a.id))
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (active) {
+          setExistingActive({
+            session_id: active.session_id,
+            domain_exam_session_id: active.id,
+          })
+          setStage(STAGE.RESUME_DIALOG)
+        } else {
+          await createFreshSession()
         }
-
-        // 4. Create fresh sessions row + domain_exam_sessions row
-        const { data: sRow, error: sErr } = await supabase
-          .from('sessions')
-          .insert({
-            user_id: user.id,
-            exam_id: examId,
-            session_type: 'domain_exam',
-          })
-          .select()
-          .single()
-        if (sErr) throw sErr
-
-        const { data: des, error: dxErr } = await supabase
-          .from('domain_exam_sessions')
-          .insert({
-            session_id: sRow.id,
-            domain_id: domainId,
-            status: 'active',
-          })
-          .select()
-          .single()
-        if (dxErr) throw dxErr
-
-        // 5. Load all questions in all LOs
-        const { data: qs, error: qErr } = await supabase
-          .from('questions')
-          .select(
-            'id, lo_id, question_type_id, question_text, explanation, difficulty, question_options(*)'
-          )
-          .in('lo_id', loIds)
-          .order('created_at')
-        if (qErr) throw qErr
-
-        const { data: qts } = await supabase.from('question_types').select('*')
-        const qtMap = {}
-        for (const t of qts ?? []) qtMap[t.id] = t
-
-        setSessionId(sRow.id)
-        setDomainExamSessionId(des.id)
-        setStartedAt(Date.now())
-        setQuestionTypesById(qtMap)
-        setQuestions(shuffle(qs ?? []))
-        setStage(STAGE.ACTIVE)
       } catch (e) {
         setError(e.message)
         setStage(STAGE.ERROR)
       }
     }
-    start()
+    load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, examId, domainId])
+
+  async function createFreshSession() {
+    try {
+      const { data: sRow, error: sErr } = await supabase
+        .from('sessions')
+        .insert({
+          user_id: user.id,
+          exam_id: examId,
+          session_type: 'domain_exam',
+        })
+        .select()
+        .single()
+      if (sErr) throw sErr
+
+      const { data: des, error: dxErr } = await supabase
+        .from('domain_exam_sessions')
+        .insert({
+          session_id: sRow.id,
+          domain_id: domainId,
+          status: 'active',
+        })
+        .select()
+        .single()
+      if (dxErr) throw dxErr
+
+      setSessionId(sRow.id)
+      setDomainExamSessionId(des.id)
+      setStartedAt(Date.now())
+      await loadQuestionsAndStart(sRow.id)
+    } catch (e) {
+      setError(e.message)
+      setStage(STAGE.ERROR)
+    }
+  }
+
+  async function resumeSession() {
+    if (!existingActive) return
+    setSessionId(existingActive.session_id)
+    setDomainExamSessionId(existingActive.domain_exam_session_id)
+    setStartedAt(Date.now())
+    await loadQuestionsAndStart(existingActive.session_id)
+  }
+
+  async function abandonAndRestart() {
+    if (!existingActive) return
+    const { error: upErr } = await supabase
+      .from('domain_exam_sessions')
+      .update({ status: 'abandoned' })
+      .eq('id', existingActive.domain_exam_session_id)
+    if (upErr) {
+      setError(upErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+    setExistingActive(null)
+    await createFreshSession()
+  }
+
+  async function loadQuestionsAndStart(sId) {
+    const { data: qs, error: qErr } = await supabase
+      .from('questions')
+      .select(
+        'id, lo_id, domain_id, question_type_id, question_text, explanation, difficulty, question_options(*), question_subtopics(lo_id)'
+      )
+      .eq('domain_id', domainId)
+      .order('created_at')
+    if (qErr) {
+      setError(qErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+
+    const { data: qts } = await supabase.from('question_types').select('*')
+    const qtMap = {}
+    for (const t of qts ?? []) qtMap[t.id] = t
+    setQuestionTypesById(qtMap)
+
+    if (!qs || qs.length === 0) {
+      setQuestions([])
+      setStage(STAGE.ACTIVE)
+      return
+    }
+
+    // Resume: prefill submitted/feedback from existing attempts
+    const { data: existingAttempts } = await supabase
+      .from('attempts')
+      .select('question_id, is_correct, user_answer')
+      .eq('session_id', sId)
+
+    const ans = {}
+    const fb = {}
+    const sub = {}
+    for (const a of existingAttempts ?? []) {
+      ans[a.question_id] = a.user_answer
+      fb[a.question_id] = { is_correct: a.is_correct }
+      sub[a.question_id] = true
+    }
+    setAnswersByQ(ans)
+    setFeedbackByQ(fb)
+    setSubmittedByQ(sub)
+
+    setQuestions(shuffle(qs))
+    setCurrentIdx(0)
+    setStage(STAGE.ACTIVE)
+  }
+
+  async function loadCompletedSession() {
+    const { data: completed, error: cErr } = await supabase
+      .from('domain_exam_sessions')
+      .select('id, session_id, sessions!inner(user_id, exam_id)')
+      .eq('domain_id', domainId)
+      .eq('status', 'completed')
+      .eq('sessions.user_id', user.id)
+      .eq('sessions.exam_id', examId)
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (cErr) {
+      setError(cErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+    if (!completed) {
+      // Nothing to view — fall back to fresh start path (which will gate
+      // on unlock if needed). Easiest: re-run the regular flow.
+      setStage(STAGE.LOCKED)
+      return
+    }
+
+    setSessionId(completed.session_id)
+    setDomainExamSessionId(completed.id)
+
+    const { data: qs, error: qErr } = await supabase
+      .from('questions')
+      .select(
+        'id, lo_id, domain_id, question_type_id, question_text, explanation, difficulty, question_options(*), question_subtopics(lo_id)'
+      )
+      .eq('domain_id', domainId)
+      .order('created_at')
+    if (qErr) {
+      setError(qErr.message)
+      setStage(STAGE.ERROR)
+      return
+    }
+    const { data: qts } = await supabase.from('question_types').select('*')
+    const qtMap = {}
+    for (const t of qts ?? []) qtMap[t.id] = t
+    setQuestionTypesById(qtMap)
+
+    const { data: existingAttempts } = await supabase
+      .from('attempts')
+      .select('question_id, is_correct, user_answer')
+      .eq('session_id', completed.session_id)
+    const ans = {}
+    const fb = {}
+    const sub = {}
+    for (const a of existingAttempts ?? []) {
+      ans[a.question_id] = a.user_answer
+      fb[a.question_id] = { is_correct: a.is_correct }
+      sub[a.question_id] = true
+    }
+    setAnswersByQ(ans)
+    setFeedbackByQ(fb)
+    setSubmittedByQ(sub)
+
+    setQuestions(qs ?? [])
+    setStage(STAGE.COMPLETED)
+  }
 
   // ── derived ──────────────────────────────────────────────────
   const current = questions[currentIdx]
@@ -191,51 +330,54 @@ export default function DomainExam() {
     if (!current) return
     setAnswersByQ((prev) => ({ ...prev, [current.id]: val }))
   }
+
+  async function submitCurrentAnswer() {
+    if (!current || submittedByQ[current.id]) return
+    const code = currentType
+    const userAnswer = answersByQ[current.id]
+    if (!isAnswered(code, userAnswer, current.question_options)) return
+
+    const is_correct = calculateIsCorrect(code, userAnswer, current.question_options)
+
+    const { error: insErr } = await supabase.from('attempts').insert({
+      session_id: sessionId,
+      user_id: user.id,
+      question_id: current.id,
+      question_type_id: current.question_type_id,
+      is_correct,
+      user_answer: userAnswer,
+    })
+    if (insErr) {
+      setError(insErr.message)
+      return
+    }
+    setFeedbackByQ((prev) => ({ ...prev, [current.id]: { is_correct } }))
+    setSubmittedByQ((prev) => ({ ...prev, [current.id]: true }))
+  }
+
   function next() {
     if (currentIdx < total - 1) setCurrentIdx(currentIdx + 1)
   }
   function prev() {
     if (currentIdx > 0) setCurrentIdx(currentIdx - 1)
   }
-
-  function attemptSubmit() {
-    if (answeredCount < total) setSubmitWarn(true)
-    else submitExam()
+  function jumpTo(idx) {
+    setCurrentIdx(idx)
   }
 
-  async function submitExam() {
-    setSubmitWarn(false)
-    setSubmitting(true)
-    try {
-      // For each question: compute is_correct (skipped = false) then bulk-insert attempts
-      const rows = []
-      const result = {}
-      let correct = 0
-      for (const q of questions) {
-        const code = questionTypesById[q.question_type_id]?.code
-        const ans = answersByQ[q.id]
-        const answered = isAnswered(code, ans, q.question_options)
-        const is_correct = answered
-          ? calculateIsCorrect(code, ans, q.question_options)
-          : false
-        if (answered) {
-          rows.push({
-            session_id: sessionId,
-            user_id: user.id,
-            question_id: q.id,
-            question_type_id: q.question_type_id,
-            is_correct,
-            user_answer: ans,
-          })
-        }
-        result[q.id] = { answered, is_correct }
-        if (is_correct) correct++
-      }
-      if (rows.length > 0) {
-        const { error: aErr } = await supabase.from('attempts').insert(rows)
-        if (aErr) throw aErr
-      }
+  function attemptSubmitExam() {
+    if (answeredCount < total) setSubmitWarn(true)
+    else completeExam()
+  }
 
+  async function completeExam() {
+    setSubmitWarn(false)
+    setCompleting(true)
+    try {
+      const correctCount = questions.reduce((acc, q) => {
+        const fb = feedbackByQ[q.id]
+        return acc + (fb?.is_correct ? 1 : 0)
+      }, 0)
       const elapsed = startedAt
         ? Math.round((Date.now() - startedAt) / 1000)
         : null
@@ -243,21 +385,19 @@ export default function DomainExam() {
         .from('domain_exam_sessions')
         .update({
           status: 'completed',
-          correct_count: correct,
+          correct_count: correctCount,
           total_questions: total,
           time_taken_seconds: elapsed,
           completed_at: new Date().toISOString(),
         })
         .eq('id', domainExamSessionId)
       if (upErr) throw upErr
-
-      toast(`Domain exam submitted — ${correct} of ${total} correct.`)
-      setResultsByQ(result)
+      toast(`Domain exam complete — ${correctCount} of ${total} correct.`)
       setStage(STAGE.COMPLETED)
     } catch (e) {
       setError(e.message)
       toast({ tone: 'error', message: `Couldn't submit: ${e.message}` })
-      setSubmitting(false)
+      setCompleting(false)
     }
   }
 
@@ -293,6 +433,35 @@ export default function DomainExam() {
       </PageWrapper>
     )
   }
+  if (stage === STAGE.RESUME_DIALOG) {
+    return (
+      <PageWrapper>
+        <Modal
+          open
+          title="Resume or restart?"
+          actions={
+            <>
+              <button
+                onClick={abandonAndRestart}
+                className="text-sm px-4 py-2 rounded-md border border-gray-200 hover:bg-gray-50"
+              >
+                Restart
+              </button>
+              <button
+                onClick={resumeSession}
+                className="text-sm px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Resume
+              </button>
+            </>
+          }
+        >
+          You have an in-progress domain exam. Resume keeps your saved answers;
+          Restart abandons them and starts fresh from question 1.
+        </Modal>
+      </PageWrapper>
+    )
+  }
   if (stage === STAGE.COMPLETED) {
     return (
       <DomainExamResults
@@ -300,9 +469,7 @@ export default function DomainExam() {
         domain={domain}
         los={los}
         questions={questions}
-        questionTypesById={questionTypesById}
-        answersByQ={answersByQ}
-        resultsByQ={resultsByQ}
+        feedbackByQ={feedbackByQ}
       />
     )
   }
@@ -324,6 +491,8 @@ export default function DomainExam() {
     )
   }
 
+  const submitted = Boolean(submittedByQ[current.id])
+  const feedback = feedbackByQ[current.id]
   const userAnswer = answersByQ[current.id] ?? emptyAnswerFor(currentType)
 
   return (
@@ -340,8 +509,7 @@ export default function DomainExam() {
           <h1 className="text-xl font-bold text-gray-900">{domain?.title}</h1>
         </div>
         <div className="text-sm text-gray-500">
-          Question {currentIdx + 1} of {total} · {answeredCount} answered ·{' '}
-          {total - answeredCount} remaining
+          Question {currentIdx + 1} of {total} · {answeredCount} answered
         </div>
       </div>
 
@@ -365,9 +533,7 @@ export default function DomainExam() {
             <span aria-hidden>⚑</span> Report
           </button>
         </div>
-        <p className="text-gray-900 whitespace-pre-wrap">
-          {current.question_text}
-        </p>
+        <p className="text-gray-900 whitespace-pre-wrap">{current.question_text}</p>
 
         <div className="mt-5">
           <QuestionRenderer
@@ -375,11 +541,33 @@ export default function DomainExam() {
             options={current.question_options}
             value={userAnswer}
             onChange={setAnswerForCurrent}
-            disabled={false}
+            disabled={submitted}
+            feedback={submitted ? feedback ?? null : null}
           />
         </div>
 
-        <div className="mt-5 flex items-center justify-between gap-2">
+        {submitted && feedback && (
+          <div
+            className={`mt-5 p-4 rounded-md border ${
+              feedback.is_correct
+                ? 'bg-green-50 border-green-200'
+                : 'bg-red-50 border-red-200'
+            }`}
+          >
+            <p
+              className={`font-semibold ${
+                feedback.is_correct ? 'text-green-700' : 'text-red-700'
+              }`}
+            >
+              {feedback.is_correct ? 'Correct' : 'Incorrect'}
+            </p>
+            <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
+              {current.explanation}
+            </p>
+          </div>
+        )}
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
           <div className="flex gap-2">
             <button
               onClick={prev}
@@ -393,18 +581,29 @@ export default function DomainExam() {
               disabled={currentIdx === total - 1}
               className="text-sm px-4 py-2 rounded-md border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
             >
-              Next
+              {submitted ? 'Next' : 'Skip'}
             </button>
           </div>
-          <span className="text-xs text-gray-400">
-            No feedback shown until you submit
-          </span>
+          {!submitted ? (
+            <button
+              onClick={submitCurrentAnswer}
+              disabled={
+                !isAnswered(currentType, userAnswer, current.question_options)
+              }
+              className="text-sm px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50"
+            >
+              Check answer
+            </button>
+          ) : (
+            <span className="text-xs text-gray-400">Locked — answer recorded</span>
+          )}
         </div>
       </div>
 
-      {/* Question navigator — answered vs unanswered only */}
+      {/* Question navigator */}
       <div className="mt-6 flex flex-wrap gap-1.5">
         {questions.map((q, idx) => {
+          const fb = feedbackByQ[q.id]
           const ans = answersByQ[q.id]
           const an = isAnswered(
             questionTypesById[q.question_type_id]?.code,
@@ -413,12 +612,14 @@ export default function DomainExam() {
           )
           let cls =
             'w-7 h-7 text-xs rounded border flex items-center justify-center '
-          cls += an
-            ? 'bg-blue-50 border-blue-300 text-blue-700'
-            : 'bg-white border-gray-200 text-gray-500'
+          if (fb?.is_correct) cls += 'bg-green-100 border-green-300 text-green-800'
+          else if (fb && !fb.is_correct)
+            cls += 'bg-red-100 border-red-300 text-red-800'
+          else if (an) cls += 'bg-blue-50 border-blue-300 text-blue-700'
+          else cls += 'bg-white border-gray-200 text-gray-500'
           if (idx === currentIdx) cls += ' ring-2 ring-blue-500'
           return (
-            <button key={q.id} className={cls} onClick={() => setCurrentIdx(idx)}>
+            <button key={q.id} className={cls} onClick={() => jumpTo(idx)}>
               {idx + 1}
             </button>
           )
@@ -427,11 +628,11 @@ export default function DomainExam() {
 
       <div className="mt-6 flex justify-end">
         <button
-          onClick={attemptSubmit}
-          disabled={submitting}
+          onClick={attemptSubmitExam}
+          disabled={completing}
           className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2 rounded-md disabled:opacity-50"
         >
-          {submitting ? 'Submitting…' : 'Submit exam'}
+          {completing ? 'Submitting…' : 'Submit exam'}
         </button>
       </div>
 
@@ -447,7 +648,7 @@ export default function DomainExam() {
               Return to exam
             </button>
             <button
-              onClick={submitExam}
+              onClick={completeExam}
               className="text-sm px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white"
             >
               Submit anyway
@@ -455,8 +656,8 @@ export default function DomainExam() {
           </>
         }
       >
-        You answered {answeredCount} of {total}. Skipped questions count as
-        incorrect.
+        You answered {answeredCount} of {total} questions. Skipped questions count
+        as incorrect.
       </Modal>
 
       <FlagModal
@@ -469,26 +670,26 @@ export default function DomainExam() {
 }
 
 // ── Results screen ──────────────────────────────────────────────
-function DomainExamResults({
-  examId,
-  domain,
-  los,
-  questions,
-  questionTypesById,
-  answersByQ,
-  resultsByQ,
-}) {
-  const correct = questions.filter((q) => resultsByQ[q.id]?.is_correct).length
+function DomainExamResults({ examId, domain, los, questions, feedbackByQ }) {
+  const correct = questions.filter((q) => feedbackByQ[q.id]?.is_correct).length
   const total = questions.length
   const pct = total ? Math.round((correct / total) * 100) : 0
 
-  // Per-LO breakdown
+  // Per-LO breakdown via question_subtopics. A question can tag multiple
+  // LOs; attribute it to each distinct LO it touches (matches the
+  // subtopic_accuracy view's many-rows-per-attempt convention).
   const losById = Object.fromEntries(los.map((l) => [l.id, l]))
   const perLo = {}
   for (const q of questions) {
-    if (!perLo[q.lo_id]) perLo[q.lo_id] = { total: 0, correct: 0 }
-    perLo[q.lo_id].total++
-    if (resultsByQ[q.id]?.is_correct) perLo[q.lo_id].correct++
+    const fb = feedbackByQ[q.id]
+    const loIds = new Set(
+      (q.question_subtopics ?? []).map((qs) => qs.lo_id).filter(Boolean)
+    )
+    for (const loId of loIds) {
+      if (!perLo[loId]) perLo[loId] = { total: 0, correct: 0 }
+      perLo[loId].total++
+      if (fb?.is_correct) perLo[loId].correct++
+    }
   }
 
   return (
@@ -512,109 +713,45 @@ function DomainExamResults({
         Per-LO breakdown
       </h2>
       <ul className="space-y-2">
-        {Object.entries(perLo).map(([loId, stats]) => {
-          const lo = losById[loId]
-          const ratio = stats.total ? Math.round((stats.correct / stats.total) * 100) : 0
+        {los.map((lo) => {
+          const stats = perLo[lo.id] ?? { total: 0, correct: 0 }
+          const ratio = stats.total
+            ? Math.round((stats.correct / stats.total) * 100)
+            : null
           return (
             <li
-              key={loId}
-              className="flex items-center justify-between bg-white border border-gray-200 rounded-md px-4 py-2"
+              key={lo.id}
+              className="flex items-center justify-between bg-white border border-gray-200 rounded-md px-4 py-2 gap-3"
             >
-              <div>
-                <span className="text-xs font-mono text-gray-500">{lo?.code}</span>{' '}
-                <span className="text-sm text-gray-900">{lo?.title}</span>
+              <div className="min-w-0">
+                <span className="text-xs font-mono text-gray-500 mr-2">{lo.code}</span>
+                <span className="text-sm text-gray-900">{lo.title}</span>
               </div>
-              <span className="text-sm">
-                {stats.correct}/{stats.total} ·{' '}
-                <span
-                  className={`font-semibold ${
-                    ratio >= 80
-                      ? 'text-green-700'
-                      : ratio >= 60
-                      ? 'text-yellow-700'
-                      : 'text-red-700'
-                  }`}
-                >
-                  {ratio}%
-                </span>
+              <span className="text-sm whitespace-nowrap">
+                {stats.correct}/{stats.total}
+                {ratio != null && (
+                  <>
+                    {' · '}
+                    <span
+                      className={`font-semibold ${
+                        ratio >= 80
+                          ? 'text-green-700'
+                          : ratio >= 60
+                          ? 'text-yellow-700'
+                          : 'text-red-700'
+                      }`}
+                    >
+                      {ratio}%
+                    </span>
+                  </>
+                )}
               </span>
             </li>
           )
         })}
-      </ul>
-
-      <h2 className="text-lg font-semibold text-gray-900 mt-8 mb-3">
-        All questions
-      </h2>
-      <ul className="space-y-3">
-        {questions.map((q, idx) => {
-          const r = resultsByQ[q.id]
-          const ans = answersByQ[q.id]
-          const lo = losById[q.lo_id]
-          return (
-            <li
-              key={q.id}
-              className={`bg-white border rounded-md p-4 ${
-                r?.is_correct
-                  ? 'border-green-200'
-                  : r?.answered
-                  ? 'border-red-200'
-                  : 'border-gray-200'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-gray-900">
-                  <span className="text-xs font-mono text-gray-500 mr-2">
-                    Q{idx + 1} · {lo?.code}
-                  </span>
-                  {q.question_text}
-                </p>
-                <span
-                  className={`text-xs font-medium px-2 py-0.5 rounded ${
-                    r?.is_correct
-                      ? 'bg-green-100 text-green-700'
-                      : r?.answered
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-gray-100 text-gray-700'
-                  }`}
-                >
-                  {r?.is_correct
-                    ? 'Correct'
-                    : r?.answered
-                    ? 'Incorrect'
-                    : 'Skipped'}
-                </span>
-              </div>
-
-              <div className="mt-3 space-y-1">
-                {[...q.question_options]
-                  .sort((a, b) => a.sort_order - b.sort_order)
-                  .map((o) => {
-                    const correctMark = correctnessIndicator(
-                      questionTypesById[q.question_type_id]?.code,
-                      o,
-                      ans
-                    )
-                    return (
-                      <div
-                        key={o.id}
-                        className={`text-sm flex gap-2 ${correctMark.cls}`}
-                      >
-                        <span className="font-mono text-xs w-6">{o.option_key}</span>
-                        <span className="flex-1">{o.option_text}</span>
-                        <span className="text-xs">{correctMark.label}</span>
-                      </div>
-                    )
-                  })}
-              </div>
-
-              <div className="mt-3 text-sm text-gray-600 whitespace-pre-wrap">
-                <span className="font-semibold text-gray-700">Explanation: </span>
-                {q.explanation}
-              </div>
-            </li>
-          )
-        })}
+        {los.length === 0 && (
+          <li className="text-sm text-gray-500">No LOs in this domain.</li>
+        )}
       </ul>
 
       <div className="mt-8">
@@ -627,54 +764,4 @@ function DomainExamResults({
       </div>
     </PageWrapper>
   )
-}
-
-// Tiny helper: which inline annotation to show next to each option in the
-// post-exam review. Compares user's answer against the correct value.
-function correctnessIndicator(code, option, userAnswer) {
-  switch (code) {
-    case 'mc': {
-      const isCorrect = option.answer_value === 'true'
-      const isPicked = userAnswer === option.option_key
-      if (isCorrect && isPicked) return { label: '✓ correct', cls: 'text-green-700' }
-      if (isCorrect) return { label: 'correct answer', cls: 'text-green-700' }
-      if (isPicked) return { label: '✗ your pick', cls: 'text-red-700' }
-      return { label: '', cls: 'text-gray-700' }
-    }
-    case 'mr': {
-      const arr = Array.isArray(userAnswer) ? userAnswer : []
-      const isCorrect = option.answer_value === 'true'
-      const isPicked = arr.includes(option.option_key)
-      if (isCorrect && isPicked) return { label: '✓ correct', cls: 'text-green-700' }
-      if (isCorrect) return { label: 'correct (missed)', cls: 'text-green-700' }
-      if (isPicked) return { label: '✗ wrong pick', cls: 'text-red-700' }
-      return { label: '', cls: 'text-gray-700' }
-    }
-    case 'ordering': {
-      const arr = Array.isArray(userAnswer) ? userAnswer : []
-      const userPos = arr.indexOf(option.option_key) + 1
-      const correctPos = parseInt(option.answer_value, 10)
-      if (!userPos) return { label: `correct: pos ${correctPos}`, cls: 'text-gray-700' }
-      if (userPos === correctPos)
-        return { label: `pos ${userPos} ✓`, cls: 'text-green-700' }
-      return {
-        label: `you: ${userPos} · correct: ${correctPos}`,
-        cls: 'text-red-700',
-      }
-    }
-    case 'matching': {
-      if (!option.option_key.startsWith('L')) return { label: '', cls: 'text-gray-700' }
-      const userPick = userAnswer?.[option.option_key]
-      const correct = option.answer_value
-      if (!userPick) return { label: `correct: ${correct}`, cls: 'text-gray-700' }
-      if (userPick === correct)
-        return { label: `→ ${userPick} ✓`, cls: 'text-green-700' }
-      return {
-        label: `you: ${userPick} · correct: ${correct}`,
-        cls: 'text-red-700',
-      }
-    }
-    default:
-      return { label: '', cls: 'text-gray-700' }
-  }
 }
