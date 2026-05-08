@@ -156,7 +156,20 @@ export default function StudyDashboard() {
                     </div>
                     <div className="text-sm">
                       {dxState === 'complete' ? (
-                        <Badge tone="green">Domain Exam Complete</Badge>
+                        <div className="flex flex-wrap gap-2">
+                          <Link
+                            to={`/study/${exam.id}/domain/${domain.id}/exam?mode=results`}
+                            className="text-xs font-medium px-3 py-2 rounded border bg-green-50 border-green-200 text-green-700 hover:bg-green-100 transition-colors"
+                          >
+                            View Results
+                          </Link>
+                          <Link
+                            to={`/study/${exam.id}/domain/${domain.id}/exam?mode=review`}
+                            className="text-xs font-medium px-3 py-2 rounded border bg-white border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                          >
+                            Review Exam
+                          </Link>
+                        </div>
                       ) : dxState === 'in_progress' ? (
                         <Link
                           to={`/study/${exam.id}/domain/${domain.id}/exam`}
@@ -228,6 +241,16 @@ export default function StudyDashboard() {
                             >
                               {qState === 'complete' ? 'View Results' : 'Take Quiz'}
                             </Link>
+
+                            {/* MANUAL LINK 3: Review Quiz (only after completion) */}
+                            {qState === 'complete' && (
+                              <Link
+                                to={`/study/${exam.id}/lo/${lo.id}/quiz?mode=review`}
+                                className="flex-1 sm:flex-none text-center text-xs font-medium px-3 py-2 rounded border bg-white border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                              >
+                                Review Quiz
+                              </Link>
+                            )}
                           </div>
                         </li>
                       )

@@ -84,7 +84,7 @@ export default function LOQuiz() {
       }
       setLo(loData)
 
-      if (mode === 'results') {
+      if (mode === 'results' || mode === 'review') {
         await loadCompletedSession()
         return
       }
@@ -435,6 +435,16 @@ export default function LOQuiz() {
     )
   }
   if (stage === STAGE.COMPLETED) {
+    if (mode === 'review') {
+      return <QuizReview
+        examId={examId}
+        lo={lo}
+        questions={questions}
+        questionTypesById={questionTypesById}
+        feedbackByQ={feedbackByQ}
+        answersByQ={answersByQ}
+      />
+    }
     return <QuizResults
       examId={examId}
       lo={lo}
@@ -758,6 +768,123 @@ function QuizResults({
           Back to study dashboard
         </Link>
       </div>
+    </PageWrapper>
+  )
+}
+
+// ── Review screen ─────────────────────────────────────────────
+function QuizReview({
+  examId,
+  lo,
+  questions,
+  questionTypesById,
+  feedbackByQ,
+  answersByQ,
+}) {
+  const [flagQid, setFlagQid] = useState(null)
+
+  const correct = questions.filter((q) => feedbackByQ[q.id]?.is_correct).length
+  const total = questions.length
+
+  return (
+    <PageWrapper>
+      <Link to={`/study/${examId}`} className="text-sm text-blue-600 hover:underline">
+        ← Study dashboard
+      </Link>
+      <h1 className="text-2xl font-bold text-gray-900 mt-3">Quiz review</h1>
+      <p className="text-gray-500">
+        {lo?.code} · {lo?.title}
+      </p>
+      <p className="text-sm text-gray-600 mt-2">
+        {correct} of {total} correct
+      </p>
+
+      <div className="mt-6 space-y-5">
+        {questions.map((q, idx) => {
+          const code = questionTypesById[q.question_type_id]?.code
+          const label = questionTypesById[q.question_type_id]?.label
+          const fb = feedbackByQ[q.id]
+          const ans = answersByQ[q.id]
+          const wasAnswered = ans !== undefined && fb !== undefined
+
+          return (
+            <div
+              key={q.id}
+              className="bg-white border border-gray-200 rounded-lg p-5"
+            >
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div className="text-xs uppercase tracking-wide text-gray-500">
+                  Q{idx + 1} of {total} · {label}
+                </div>
+                <div className="flex items-center gap-3">
+                  {!wasAnswered ? (
+                    <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                      Not answered
+                    </span>
+                  ) : fb?.is_correct ? (
+                    <span className="text-xs px-2 py-0.5 rounded bg-green-100 text-green-800">
+                      Correct
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800">
+                      Incorrect
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setFlagQid(q.id)}
+                    title="Report this question"
+                    className="text-xs text-gray-400 hover:text-red-600 flex items-center gap-1"
+                  >
+                    <span aria-hidden>⚑</span> Report
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-gray-900 whitespace-pre-wrap">{q.question_text}</p>
+
+              <div className="mt-5">
+                <QuestionRenderer
+                  questionTypeCode={code}
+                  options={q.question_options}
+                  value={ans ?? emptyAnswerFor(code)}
+                  onChange={() => {}}
+                  disabled
+                  feedback={fb ?? null}
+                />
+              </div>
+
+              <div
+                className={`mt-5 p-4 rounded-md border ${
+                  !wasAnswered
+                    ? 'bg-gray-50 border-gray-200'
+                    : fb?.is_correct
+                    ? 'bg-green-50 border-green-200'
+                    : 'bg-red-50 border-red-200'
+                }`}
+              >
+                <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                  {q.explanation}
+                </p>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="mt-8">
+        <Link
+          to={`/study/${examId}`}
+          className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2 rounded-md"
+        >
+          Back to study dashboard
+        </Link>
+      </div>
+
+      <FlagModal
+        open={Boolean(flagQid)}
+        questionId={flagQid}
+        onClose={() => setFlagQid(null)}
+      />
     </PageWrapper>
   )
 }
