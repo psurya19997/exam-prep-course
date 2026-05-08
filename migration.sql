@@ -583,11 +583,18 @@ CREATE POLICY "creators manage lo_question_types"
 CREATE POLICY "students read questions of published exams"
   ON questions FOR SELECT
   USING (
+    -- LO Pool: reachable via lo_id
     EXISTS (
       SELECT 1 FROM los
       JOIN domains ON domains.id = los.domain_id
       JOIN exams ON exams.id = domains.exam_id
       WHERE los.id = questions.lo_id AND exams.status = 'published'
+    )
+    -- Exam Pool: reachable via domain_id (lo_id is NULL for these)
+    OR EXISTS (
+      SELECT 1 FROM domains
+      JOIN exams ON exams.id = domains.exam_id
+      WHERE domains.id = questions.domain_id AND exams.status = 'published'
     )
     OR auth_is_creator()
   );
@@ -599,12 +606,20 @@ CREATE POLICY "creators manage questions"
 CREATE POLICY "students read question_options"
   ON question_options FOR SELECT
   USING (
+    -- LO Pool option
     EXISTS (
-      SELECT 1 FROM questions
-      JOIN los ON los.id = questions.lo_id
+      SELECT 1 FROM questions q
+      JOIN los ON los.id = q.lo_id
       JOIN domains ON domains.id = los.domain_id
       JOIN exams ON exams.id = domains.exam_id
-      WHERE questions.id = question_options.question_id AND exams.status = 'published'
+      WHERE q.id = question_options.question_id AND exams.status = 'published'
+    )
+    -- Exam Pool option
+    OR EXISTS (
+      SELECT 1 FROM questions q
+      JOIN domains ON domains.id = q.domain_id
+      JOIN exams ON exams.id = domains.exam_id
+      WHERE q.id = question_options.question_id AND exams.status = 'published'
     )
     OR auth_is_creator()
   );
