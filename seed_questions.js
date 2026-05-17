@@ -62,6 +62,20 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
+// ── Helpers ──────────────────────────────────────────────────────
+// Normalise answer_value to the canonical form the app's scoring
+// expects. mc/mr must be the lowercase strings 'true'/'false';
+// ordering ("1","2",…) and matching (e.g. "R2") values pass through
+// unchanged, as does empty. Defensive against CSVs that ship with
+// "TRUE"/"FALSE" or surrounding whitespace.
+function normaliseAnswerValue(v) {
+  const s = (v ?? '').trim()
+  const lower = s.toLowerCase()
+  if (lower === 'true') return 'true'
+  if (lower === 'false') return 'false'
+  return s
+}
+
 // ── CSV parser (RFC-4180-ish) ────────────────────────────────────
 function parseCSV(text) {
   const rows = []
@@ -316,7 +330,7 @@ async function main() {
       question_id: questionId,
       option_key: r.option_key,
       option_text: r.option_text,
-      answer_value: r.answer_value ?? '',
+      answer_value: normaliseAnswerValue(r.answer_value),
       sort_order: parseInt(r.sort_order, 10) || 0,
     }))
     const { error: insOptErr } = await supabase

@@ -217,7 +217,7 @@ export default function LOQuiz() {
     setSessionId(existingActive.session_id)
     setLoQuizSessionId(existingActive.lo_quiz_session_id)
     setStartedAt(Date.now())
-    await loadQuestionsAndStart(existingActive.session_id)
+    await loadQuestionsAndStart(existingActive.session_id, false)
   }
 
   async function abandonAndRestart() {
@@ -235,7 +235,7 @@ export default function LOQuiz() {
     await createFreshSession()
   }
 
-  async function loadQuestionsAndStart(sId) {
+  async function loadQuestionsAndStart(sId, shouldShuffle = true) {
     // Load all questions for this LO
     const { data: qs, error: qErr } = await supabase
       .from('questions')
@@ -279,7 +279,7 @@ export default function LOQuiz() {
     setFeedbackByQ(fb)
     setSubmittedByQ(sub)
 
-    setQuestions(shuffle(qs))
+    setQuestions(shouldShuffle ? shuffle(qs) : qs)
     setCurrentIdx(0)
     setStage(STAGE.ACTIVE)
   }

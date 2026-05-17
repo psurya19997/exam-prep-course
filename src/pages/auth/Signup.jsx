@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth.jsx'
+import AuthLayout from '../../components/layout/AuthLayout.jsx'
 
 export default function Signup() {
   const { signUp } = useAuth()
@@ -30,7 +31,7 @@ export default function Signup() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+    <AuthLayout>
       <form
         onSubmit={handleSubmit}
         className="w-full max-w-sm bg-white shadow rounded-lg p-8 space-y-5"
@@ -78,6 +79,6 @@ export default function Signup() {
           </Link>
         </p>
       </form>
-    </div>
+    </AuthLayout>
   )
 }
