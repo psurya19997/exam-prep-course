@@ -89,7 +89,7 @@ export default function LOContent() {
     <PageWrapper>
       <Link
         to={`/study/${examId}`}
-        className="text-sm text-blue-600 hover:underline"
+        className="no-print text-sm text-blue-600 hover:underline"
       >
         ← Study dashboard
       </Link>
@@ -122,13 +122,19 @@ export default function LOContent() {
       )}
 
       {lo && (
-        <div className="fixed bottom-0 inset-x-0 bg-white border-t border-gray-200 px-4 py-3">
+        <div className="no-print fixed bottom-0 inset-x-0 bg-white border-t border-gray-200 px-4 py-3">
           <div className="max-w-5xl mx-auto flex justify-end items-center gap-3">
             {alreadyComplete && (
               <span className="text-sm text-green-700">
                 Already completed — clicking will create a new session
               </span>
             )}
+            <button
+              onClick={() => window.print()}
+              className="border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium px-4 py-2 rounded-md text-sm"
+            >
+              ↓ Download PDF
+            </button>
             <button
               onClick={handleComplete}
               disabled={completing}

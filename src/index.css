@@ -1,3 +1,25 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@media print {
+  /* Hide everything except the LO article */
+  body > *:not(#root) { display: none !important; }
+  .no-print { display: none !important; }
+
+  /* Reset page chrome */
+  body { background: white; margin: 0; padding: 0; }
+
+  /* Let the article fill the page width */
+  article {
+    padding-bottom: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Fix tables — no horizontal scroll, full width */
+  .overflow-x-auto { overflow: visible !important; }
+  table { width: 100% !important; table-layout: auto !important; }
+
+  /* Avoid page breaks inside rows and code blocks */
+  tr, pre { break-inside: avoid; }
+}
