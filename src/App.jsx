@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import Login from './pages/auth/Login.jsx'
 import Signup from './pages/auth/Signup.jsx'
+import ResetPassword from './pages/auth/ResetPassword.jsx'
 import ProtectedRoute from './components/ProtectedRoute.jsx'
 import ExamCatalog from './pages/exam/ExamCatalog.jsx'
 import ExamDetail from './pages/exam/ExamDetail.jsx'
@@ -29,6 +30,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
 
       <Route path="/exams" element={<Protected><ExamCatalog /></Protected>} />
       <Route path="/exams/:examId" element={<Protected><ExamDetail /></Protected>} />

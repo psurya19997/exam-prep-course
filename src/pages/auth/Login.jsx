@@ -206,11 +206,11 @@ export default function Login() {
                 type="text"
                 required
                 inputMode="numeric"
-                maxLength={6}
+                maxLength={8}
                 value={otp}
                 onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
                 className="w-full border border-gray-300 rounded-md px-3 py-2 tracking-widest text-center text-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                placeholder="······"
+                placeholder="········"
               />
             </div>
 
@@ -218,7 +218,7 @@ export default function Login() {
 
             <button
               type="submit"
-              disabled={submitting || otp.length < 6}
+              disabled={submitting || otp.length < 8}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded-md disabled:opacity-50"
             >
               {submitting ? 'Verifying…' : 'Verify'}
@@ -227,7 +227,7 @@ export default function Login() {
             <p className="text-sm text-gray-600 text-center">
               <button
                 type="button"
-                onClick={() => { reset(); setView(VIEW.FORGOT) }}
+                onClick={() => { reset(); setOtp(''); setView(VIEW.FORGOT) }}
                 className="text-blue-600 hover:underline"
               >
                 Resend OTP
