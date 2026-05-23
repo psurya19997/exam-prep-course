@@ -200,7 +200,7 @@ export default function Login() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                6-digit code
+                8-digit code
               </label>
               <input
                 type="text"
